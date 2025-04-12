@@ -1,112 +1,246 @@
+import json
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
+from functools import wraps
+import inspect
+import logging
+from collections import UserList
+from typing import Dict, Any, Optional
+from .orchestrator import Orchestrator
+from .writer import Writer
 
-# Define functions for the novel writing assistant tools
-def generate_plot_idea(genre: str) -> dict:
-	"""Generates a plot idea for a specified genre.
-	
-	Args:
-		genre (str): The genre for which to generate a plot idea.
-		
-	Returns:
-		dict: status and result or error msg.
-	"""
-	if genre.lower() == "mystery":
-		return {
-			"status": "success",
-			"idea": "A respected detective finds evidence that their mentor may have framed an innocent person 20 years ago, forcing them to choose between loyalty and justice."
-		}
-	elif genre.lower() == "fantasy":
-		return {
-			"status": "success",
-			"idea": "In a world where magic is tied to memories, a scholar discovers a forgotten spell that could save their dying city, but casting it requires sacrificing their most precious memory."
-		}
-	elif genre.lower() == "romance":
-		return {
-			"status": "success",
-			"idea": "Two rival food critics who've spent years writing scathing reviews about each other's work are forced to collaborate on a cookbook, discovering they have more in common than they thought."
-		}
-	else:
-		return {
-			"status": "success",
-			"idea": f"An ordinary person discovers they have an extraordinary ability that makes them both valuable and hunted in the {genre} world."
-		}
+class ToolManager(UserList):
+    def __init__(self, tools):
+        super().__init__(tools)
+        self._tools_map = {tool.name: tool for tool in tools}
+        
+    def __getattr__(self, name):
+        if name in self._tools_map:
+            # Return the actual function reference
+            return self._tools_map[name]
+        raise AttributeError(f"No tool named '{name}'")
 
+# Tool registry list
+tool_registry = []
+
+# Tool decorator to define metadata and register tools
+def tool(description=None):
+    """Decorator for registering tool functions with metadata.
+    
+    Args:
+        description (str, optional): Description of what the tool does.
+            If None, the function's docstring will be used.
+    
+    Returns:
+        function: Decorated function with metadata attached.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        
+        # Extract function metadata
+        func_name = func.__name__
+        func_doc = func.__doc__ or ""
+        func_signature = inspect.signature(func)
+        
+        # Use provided description or function docstring
+        wrapper.description = description or func_doc.strip()
+        wrapper.name = func_name
+        wrapper.parameters = {
+            name: {
+                "type": param.annotation.__name__ if param.annotation != inspect.Parameter.empty else "any",
+                "description": "",  # Could be enhanced with param docs extraction
+                "required": param.default == inspect.Parameter.empty
+            }
+            for name, param in func_signature.parameters.items()
+        }
+        
+        # Register the tool
+        tool_registry.append(wrapper)
+        return wrapper
+    return decorator
+
+# Define functions for the novel writing assistant tools with decorator
+@tool(description="Generates a plot idea for a specified genre.")
+def generate_plot_idea(genre: str, description: Optional[str] = None) -> dict:
+    """Generates a plot idea for a specified genre using LLM.
+    
+    Args:
+        genre: The genre of the plot idea (e.g. fantasy, sci-fi)
+        description: Optional additional description to guide the plot generation
+    
+    Args:
+        genre (str): The genre for which to generate a plot idea.
+        
+    Returns:
+        dict: status and result or error msg.
+    """
+    try:
+        response = root_agent.model.complete(
+            prompt=f"Generate an original and creative plot idea for a {genre} story. "
+                   "The idea should be 1-2 sentences long and contain an interesting conflict or twist.",
+            temperature=0.8
+        )
+        return {
+            "status": "success",
+            "idea": response.choices[0].text.strip()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Failed to generate plot idea: {str(e)}"
+        }
+
+@tool(description="Develops a character based on a specified archetype.")
 def develop_character(archetype: str) -> dict:
-	"""Develops a character based on a specified archetype.
-	
-	Args:
-		archetype (str): The character archetype to develop.
-		
-	Returns:
-		dict: status and character details or error msg.
-	"""
-	archetypes = {
-		"hero": {
-			"traits": "Brave, selfless, determined",
-			"flaws": "Overconfident, stubborn, self-sacrificing to a fault",
-			"background": "Ordinary upbringing with a defining incident that revealed their exceptional nature",
-			"motivation": "To protect others and prove their worth"
-		},
-		"mentor": {
-			"traits": "Wise, patient, experienced",
-			"flaws": "Secretive, manipulative, haunted by past failures",
-			"background": "Has lived through similar challenges as the protagonist, but failed in some crucial way",
-			"motivation": "To guide others to succeed where they once failed"
-		},
-		"villain": {
-			"traits": "Intelligent, driven, charismatic",
-			"flaws": "Arrogant, ruthless, unable to see other perspectives",
-			"background": "Once idealistic but twisted by trauma or betrayal",
-			"motivation": "To reshape the world according to their vision, or avenge perceived wrongs"
-		}
-	}
-	
-	if archetype.lower() in archetypes:
-		return {
-			"status": "success",
-			"character": archetypes[archetype.lower()]
-		}
-	else:
-		return {
-			"status": "error",
-			"error_message": f"Sorry, the archetype '{archetype}' is not available."
-		}
+    """Develops a character based on a specified archetype using LLM.
+    
+    Args:
+        archetype (str): The character archetype to develop.
+        
+    Returns:
+        dict: status and character details or error msg.
+    """
+    try:
+        response = root_agent.model.complete(
+            prompt=f"Develop a detailed character profile for a {archetype} archetype. "
+                   "Include traits, flaws, background and motivation in JSON format.",
+            temperature=0.7
+        )
+        return {
+            "status": "success",
+            "character": json.loads(response.choices[0].text.strip())
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Failed to develop character: {str(e)}"
+        }
 
+@tool(description="Provides a writing prompt with suggested word count.")
 def writing_prompt(word_count: int) -> dict:
-	"""Provides a writing prompt with suggested word count.
-	
-	Args:
-		word_count (int): The target word count for the prompt.
-		
-	Returns:
-		dict: status and prompt or error msg.
-	"""
-	prompts = {
-		"short": "Write a scene where a character discovers a hidden letter that changes everything they believed about their family.",
-		"medium": "Write a story about someone who wakes up with the ability to hear others' thoughts, but only when they're thinking about secrets.",
-		"long": "Write a story that begins with a character receiving an unexpected inheritance that comes with unusual conditions, and ends with them making a difficult choice between what they want and what they need."
-	}
-	
-	if word_count <= 500:
-		prompt_type = "short"
-	elif word_count <= 2000:
-		prompt_type = "medium"
-	else:
-		prompt_type = "long"
-	
-	return {
-		"status": "success",
-		"prompt": prompts[prompt_type],
-		"target_word_count": word_count
-	}
+    """Provides a writing prompt with suggested word count using LLM.
+    
+    Args:
+        word_count (int): The target word count for the prompt.
+        
+    Returns:
+        dict: status and prompt or error msg.
+    """
+    try:
+        response = root_agent.model.complete(
+            prompt=f"Generate a creative writing prompt suitable for a story of about {word_count} words. "
+                   "The prompt should include an interesting premise and potential conflict.",
+            temperature=0.7
+        )
+        return {
+            "status": "success",
+            "prompt": response.choices[0].text.strip(),
+            "target_word_count": word_count
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Failed to generate writing prompt: {str(e)}"
+        }
 
-# Create the agent with Ollama integration
-# LiteLLM knows how to connect to a local Ollama server by default
+# Initialize core components
+orchestrator = Orchestrator()
+writer = Writer(model=LiteLlm(
+    model="ollama/gemma3:4b",
+    api_base="http://localhost:11434",
+    timeout=60,
+    temperature=0.7
+))
+
+@tool(description="Generate a complete chapter from structured story data.")
+def generate_chapter(story_data: Dict[str, Any]) -> Dict:
+    """Generate a complete chapter using orchestrator and writer pipeline.
+    
+    Args:
+        story_data: Dictionary containing plot, characters and style preferences
+        
+    Returns:
+        Dictionary with chapter content and metrics
+    """
+    try:
+        # Process through orchestrator - ensure orchestrator has the tool_manager
+        if not orchestrator.tool_manager:
+            orchestrator.tool_manager = root_agent.tools
+            
+        # Process data through orchestrator
+        prompt = orchestrator.process(story_data)
+        
+        # Generate chapter content through writer
+        result = writer.process(prompt)
+        
+        return {
+            "status": "success",
+            "chapter": result
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": str(e)
+        }
+
+@tool(description="Analyze text for style consistency with detailed parameters.")
+def analyze_style(
+    text: str,
+    tone: str = "neutral",
+    contraction_score: Optional[float] = None,
+    sentence_length: Optional[int] = None,
+    metaphor_density: Optional[float] = None,
+    alliteration_score: Optional[float] = None
+) -> Dict:
+    """Analyze text against specified style parameters.
+    
+    Args:
+        text: Content to analyze
+        tone: Writing tone (formal/casual/poetic)
+        contraction_score: Target contraction usage ratio (0-1)
+        sentence_length: Target average sentence length
+        metaphor_density: Target metaphor density (0-1)
+        alliteration_score: Target alliteration score (0-1)
+        
+    Returns:
+        Dictionary with style analysis metrics including:
+        - status: success/error
+        - metrics: Dictionary with style scores
+    """
+    analyzer = StyleAnalyzer()
+    
+    # Handle legacy style_preferences if provided
+    if style_preferences is not None:
+        metrics = analyzer.analyze(text, style_preferences)
+    else:
+        metrics = analyzer.analyze_style_v2(
+            text,
+            tone=tone,
+            contraction_score=contraction_score,
+            sentence_length=sentence_length,
+            metaphor_density=metaphor_density,
+            alliteration_score=alliteration_score
+        )
+    
+    return {
+        "status": "success",
+        "metrics": metrics
+    }
+
+# Create the agent with enhanced capabilities
 root_agent = Agent(
-	name="novel_writing_assistant",
-	model=LiteLlm(model="ollama/gemma3:4b"), # Standard LiteLLM format for Ollama
-	description="Agent to help with novel writing and creative storytelling.",
-	instruction="I can help you develop your novel by generating plot ideas, developing characters, and providing writing prompts. I'm running locally via Ollama.",
-	tools=[generate_plot_idea, develop_character, writing_prompt],
+    name="novel_writing_assistant",
+    model=LiteLlm(
+        model="ollama/gemma3:4b",
+        api_base="http://localhost:11434",
+        timeout=60,
+        temperature=0.7
+    ),
+    description="Advanced agent for novel writing with full chapter generation capabilities.",
+    instruction="I can help develop your novel by generating plot ideas, developing characters, "
+               "providing writing prompts, and generating complete chapters. "
+               "I'm running locally via Ollama.",
+    tools=ToolManager(tool_registry),
 )
